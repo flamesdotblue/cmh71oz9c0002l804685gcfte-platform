@@ -3,6 +3,7 @@ import HeroCover from './components/HeroCover';
 import DataUploader from './components/DataUploader';
 import BalanceAndDues from './components/BalanceAndDues';
 import TransactionsPanel from './components/TransactionsPanel';
+import { motion } from 'framer-motion';
 
 // Basic CSV parser supporting quoted fields and commas within quotes
 function parseCSV(text) {
@@ -93,8 +94,7 @@ function parseDate(d) {
   if (!d) return null;
   const t = new Date(d);
   if (!isNaN(t.getTime())) return t;
-  // try dd/mm/yyyy
-  const m = String(d).match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/);
+  const m = String(d).match(/^(\d{1,2})[\/. -](\d{1,2})[\/. -](\d{2,4})$/);
   if (m) {
     const dd = parseInt(m[1]);
     const mm = parseInt(m[2]) - 1;
@@ -135,7 +135,6 @@ export default function App() {
   const [employees, setEmployees] = useLocalState('app_employees', []);
   const [currency, setCurrency] = useLocalState('app_currency', 'USD');
 
-  // Derived stats
   const { balance, incomeTotal, expenseTotal, byCategory, monthly } = useMemo(() => {
     const byCat = {};
     let inc = 0;
@@ -161,7 +160,6 @@ export default function App() {
     return { balance: bal, incomeTotal: inc, expenseTotal: exp, byCategory: byCat, monthly: monthlyArr };
   }, [transactions]);
 
-  // Compute dues for current month based on salary vs payments tagged to employee
   const employeeDues = useMemo(() => {
     const now = new Date();
     const mkey = monthKey(now);
@@ -199,7 +197,6 @@ export default function App() {
     out.description = row.description || row.Details || row.Description || '';
     out.employeeId = row.employeeId || row.EmployeeID || row.employee || '';
     if (!(out.type === 'in' || out.type === 'income' || out.type === 'out' || out.type === 'expense')) {
-      // Infer type by sign
       out.type = out.amount >= 0 ? 'in' : 'out';
       out.amount = Math.abs(out.amount);
     }
@@ -219,10 +216,9 @@ export default function App() {
   const handleUpload = ({ transactionsCSV, employeesCSV, currencyGuess }) => {
     const tx = transactionsCSV ? parseCSV(transactionsCSV).map(normalizeTransactionRow) : [];
     const em = employeesCSV ? parseCSV(employeesCSV).map(normalizeEmployeeRow) : [];
-    // If a single uploaded file might contain employees, try to detect by presence of name+salary columns with no amount
     if (!employeesCSV && transactionsCSV) {
       const rows = parseCSV(transactionsCSV);
-      const looksLikeEmployee = rows.every(r => (r.name || r.Name) && (r.salary || r.Salary));
+      const looksLikeEmployee = rows.length > 0 && rows.every(r => (r.name || r.Name) && (r.salary || r.Salary));
       if (looksLikeEmployee) {
         setEmployees(rows.map(normalizeEmployeeRow));
       } else {
@@ -240,7 +236,6 @@ export default function App() {
   };
 
   const monthsForChart = useMemo(() => {
-    // Ensure at least last 6 months are shown
     const map = new Map(monthly.map(m => [m.month, m]));
     const arr = [];
     const now = new Date();
@@ -253,36 +248,56 @@ export default function App() {
   }, [monthly]);
 
   return (
-    <div className="min-h-screen w-full bg-white text-neutral-900">
-      <div className="relative h-[50vh] w-full">
+    <div className="relative min-h-screen w-full bg-[radial-gradient(1200px_800px_at_80%_-10%,rgba(56,189,248,0.25),transparent),radial-gradient(1200px_800px_at_-10%_10%,rgba(167,139,250,0.20),transparent)] text-neutral-900">
+      <div className="absolute inset-0 -z-10 pointer-events-none">
+        <div className="absolute -top-20 -left-20 h-72 w-72 rounded-full blur-3xl opacity-50 bg-cyan-300/30" />
+        <div className="absolute -bottom-20 -right-16 h-80 w-80 rounded-full blur-3xl opacity-40 bg-fuchsia-300/30" />
+      </div>
+
+      <div className="relative h-[56vh] w-full overflow-hidden rounded-b-[2rem]">
+        <div className="absolute inset-0 bg-gradient-to-b from-white/0 via-white/20 to-white" />
         <HeroCover />
-        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-white/40 to-white pointer-events-none" />
-        <div className="absolute inset-x-0 bottom-0 px-6 md:px-10 pb-6">
-          <h1 className="text-3xl md:text-5xl font-semibold tracking-tight">Personal Business Dashboard</h1>
-          <p className="text-sm md:text-base text-neutral-600 mt-2">Upload your CSV, see balance, employee dues, monthly performance, and add new transactions.</p>
+        <div className="absolute inset-x-0 bottom-0 px-6 md:px-10 pb-8">
+          <motion.h1
+            initial={{ y: 24, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            transition={{ duration: 0.6, ease: 'easeOut' }}
+            className="text-4xl md:text-6xl font-semibold tracking-tight drop-shadow-sm"
+          >
+            Finance & Team Command Center
+          </motion.h1>
+          <motion.p
+            initial={{ y: 24, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            transition={{ duration: 0.6, delay: 0.1, ease: 'easeOut' }}
+            className="text-sm md:text-base text-neutral-700 mt-3"
+          >
+            Upload your data, track balance and dues, visualize cashflow, and add new transactions instantly.
+          </motion.p>
         </div>
       </div>
 
-      <main className="max-w-7xl mx-auto px-6 md:px-10 -mt-16">
-        <div className="grid grid-cols-1 gap-6">
-          <DataUploader onUpload={handleUpload} />
-          <BalanceAndDues
-            balance={balance}
-            incomeTotal={incomeTotal}
-            expenseTotal={expenseTotal}
-            byCategory={byCategory}
-            employeeDues={employeeDues}
-            currency={currency}
-            months={monthsForChart}
-            formatCurrency={formatCurrency}
-          />
-          <TransactionsPanel
-            transactions={transactions}
-            onAddTransaction={addTransaction}
-            currency={currency}
-            formatCurrency={formatCurrency}
-          />
-        </div>
+      <main className="max-w-7xl mx-auto px-6 md:px-10 -mt-20 space-y-6">
+        <DataUploader onUpload={handleUpload} />
+        <BalanceAndDues
+          balance={balance}
+          incomeTotal={incomeTotal}
+          expenseTotal={expenseTotal}
+          byCategory={byCategory}
+          employeeDues={employeeDues}
+          currency={currency}
+          months={monthsForChart}
+          formatCurrency={formatCurrency}
+        />
+        <TransactionsPanel
+          transactions={transactions}
+          onAddTransaction={addTransaction}
+          currency={currency}
+          formatCurrency={formatCurrency}
+        />
+        <footer className="py-8 text-center text-xs text-neutral-500">
+          Built for your private workflow. Data stays in your browser.
+        </footer>
       </main>
     </div>
   );
