@@ -1,28 +1,289 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react';
+import HeroCover from './components/HeroCover';
+import DataUploader from './components/DataUploader';
+import BalanceAndDues from './components/BalanceAndDues';
+import TransactionsPanel from './components/TransactionsPanel';
 
-function App() {
-  const [count, setCount] = useState(0)
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-50 to-blue-50 flex items-center justify-center">
-      <div className="bg-white p-8 rounded-lg shadow-lg">
-        <h1 className="text-3xl font-bold text-gray-800 mb-4">
-          Vibe Coding Platform
-        </h1>
-        <p className="text-gray-600 mb-6">
-          Your AI-powered development environment
-        </p>
-        <div className="text-center">
-          <button
-            onClick={() => setCount(count + 1)}
-            className="bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded"
-          >
-            Count is {count}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
+// Basic CSV parser supporting quoted fields and commas within quotes
+function parseCSV(text) {
+  const rows = [];
+  let i = 0;
+  let field = '';
+  let row = [];
+  let inQuotes = false;
+  const pushField = () => {
+    row.push(field);
+    field = '';
+  };
+  while (i < text.length) {
+    const char = text[i];
+    if (inQuotes) {
+      if (char === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i += 2;
+          continue;
+        } else {
+          inQuotes = false;
+          i++;
+          continue;
+        }
+      } else {
+        field += char;
+        i++;
+        continue;
+      }
+    } else {
+      if (char === '"') {
+        inQuotes = true;
+        i++;
+        continue;
+      }
+      if (char === ',') {
+        pushField();
+        i++;
+        continue;
+      }
+      if (char === '\n') {
+        pushField();
+        if (row.length === 1 && row[0] === '') {
+          row = [];
+          i++;
+          continue;
+        }
+        rows.push(row);
+        row = [];
+        i++;
+        continue;
+      }
+      if (char === '\r') {
+        i++;
+        continue;
+      }
+      field += char;
+      i++;
+    }
+  }
+  // push last field/row
+  if (field.length > 0 || row.length > 0) {
+    pushField();
+    if (row.length > 0) rows.push(row);
+  }
+  if (!rows.length) return [];
+  const headers = rows[0].map(h => h.trim());
+  const data = rows.slice(1).filter(r => r.some(cell => cell && cell.trim() !== '')).map(r => {
+    const obj = {};
+    headers.forEach((h, idx) => {
+      obj[h] = (r[idx] ?? '').trim();
+    });
+    return obj;
+  });
+  return data;
 }
 
-export default App
+function toNumber(val) {
+  if (val === null || val === undefined) return 0;
+  if (typeof val === 'number') return val;
+  const cleaned = String(val).replace(/[^0-9\.-]/g, '');
+  const n = parseFloat(cleaned);
+  return isNaN(n) ? 0 : n;
+}
+
+function parseDate(d) {
+  if (!d) return null;
+  const t = new Date(d);
+  if (!isNaN(t.getTime())) return t;
+  // try dd/mm/yyyy
+  const m = String(d).match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/);
+  if (m) {
+    const dd = parseInt(m[1]);
+    const mm = parseInt(m[2]) - 1;
+    const yy = parseInt(m[3].length === 2 ? '20' + m[3] : m[3]);
+    const d2 = new Date(yy, mm, dd);
+    return isNaN(d2.getTime()) ? null : d2;
+  }
+  return null;
+}
+
+function formatCurrency(n, currency = 'USD') {
+  try {
+    return new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(n || 0);
+  } catch {
+    return `$${(n || 0).toFixed(2)}`;
+  }
+}
+
+function monthKey(date) {
+  const y = date.getFullYear();
+  const m = date.getMonth() + 1;
+  return `${y}-${String(m).padStart(2, '0')}`;
+}
+
+function useLocalState(key, initial) {
+  const [state, setState] = useState(() => {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : initial;
+  });
+  useEffect(() => {
+    localStorage.setItem(key, JSON.stringify(state));
+  }, [key, state]);
+  return [state, setState];
+}
+
+export default function App() {
+  const [transactions, setTransactions] = useLocalState('app_transactions', []);
+  const [employees, setEmployees] = useLocalState('app_employees', []);
+  const [currency, setCurrency] = useLocalState('app_currency', 'USD');
+
+  // Derived stats
+  const { balance, incomeTotal, expenseTotal, byCategory, monthly } = useMemo(() => {
+    const byCat = {};
+    let inc = 0;
+    let exp = 0;
+    const monthlyAgg = {};
+    for (const t of transactions) {
+      const amt = toNumber(t.amount);
+      const type = (t.type || '').toLowerCase();
+      const cat = (t.category || 'Uncategorized') || 'Uncategorized';
+      const d = parseDate(t.date);
+      if (type === 'in' || type === 'income') inc += amt; else exp += amt;
+      byCat[cat] = (byCat[cat] || 0) + amt * (type === 'in' || type === 'income' ? 1 : -1);
+      if (d) {
+        const key = monthKey(d);
+        if (!monthlyAgg[key]) monthlyAgg[key] = { in: 0, out: 0 };
+        if (type === 'in' || type === 'income') monthlyAgg[key].in += amt; else monthlyAgg[key].out += amt;
+      }
+    }
+    const bal = inc - exp;
+    const monthlyArr = Object.entries(monthlyAgg)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => ({ month: k, ...v }));
+    return { balance: bal, incomeTotal: inc, expenseTotal: exp, byCategory: byCat, monthly: monthlyArr };
+  }, [transactions]);
+
+  // Compute dues for current month based on salary vs payments tagged to employee
+  const employeeDues = useMemo(() => {
+    const now = new Date();
+    const mkey = monthKey(now);
+    const pays = {};
+    for (const t of transactions) {
+      const d = parseDate(t.date);
+      if (!d) continue;
+      if (monthKey(d) !== mkey) continue;
+      const type = (t.type || '').toLowerCase();
+      if (type !== 'out' && type !== 'expense') continue;
+      const cat = (t.category || '').toLowerCase();
+      if (cat.includes('salary') || cat.includes('payroll') || cat.includes('wage')) {
+        const eid = (t.employeeId || t.employee || '').toString().trim();
+        if (!eid) continue;
+        pays[eid] = (pays[eid] || 0) + toNumber(t.amount);
+      }
+    }
+    return employees.map(e => {
+      const eid = (e.employeeId || e.id || e.EmployeeID || '').toString().trim();
+      const salary = toNumber(e.salary || e.Salary || e.monthlySalary || 0);
+      const paid = pays[eid] || 0;
+      const due = Math.max(0, salary - paid);
+      const active = String(e.active ?? e.Active ?? e.status ?? e.Status ?? 'true').toLowerCase();
+      const isActive = active === 'true' || active === 'active' || active === '1' || active === 'yes';
+      return { id: eid || e.name || 'N/A', name: e.name || e.Name || `Employee ${eid || ''}`, role: e.role || e.Role || '', salary, paid, due, active: isActive };
+    });
+  }, [employees, transactions]);
+
+  function normalizeTransactionRow(row) {
+    const out = { ...row };
+    out.date = row.date || row.Date || row.timestamp || row.Timestamp || '';
+    out.type = (row.type || row.Type || '').toLowerCase();
+    out.amount = toNumber(row.amount || row.Amount || 0);
+    out.category = row.category || row.Category || '';
+    out.description = row.description || row.Details || row.Description || '';
+    out.employeeId = row.employeeId || row.EmployeeID || row.employee || '';
+    if (!(out.type === 'in' || out.type === 'income' || out.type === 'out' || out.type === 'expense')) {
+      // Infer type by sign
+      out.type = out.amount >= 0 ? 'in' : 'out';
+      out.amount = Math.abs(out.amount);
+    }
+    return out;
+  }
+
+  function normalizeEmployeeRow(row) {
+    const out = { ...row };
+    out.employeeId = row.employeeId || row.EmployeeID || row.id || row.ID || '';
+    out.name = row.name || row.Name || '';
+    out.role = row.role || row.Role || '';
+    out.salary = toNumber(row.salary || row.Salary || row.monthlySalary || 0);
+    out.active = row.active ?? row.Active ?? row.status ?? row.Status ?? 'true';
+    return out;
+  }
+
+  const handleUpload = ({ transactionsCSV, employeesCSV, currencyGuess }) => {
+    const tx = transactionsCSV ? parseCSV(transactionsCSV).map(normalizeTransactionRow) : [];
+    const em = employeesCSV ? parseCSV(employeesCSV).map(normalizeEmployeeRow) : [];
+    // If a single uploaded file might contain employees, try to detect by presence of name+salary columns with no amount
+    if (!employeesCSV && transactionsCSV) {
+      const rows = parseCSV(transactionsCSV);
+      const looksLikeEmployee = rows.every(r => (r.name || r.Name) && (r.salary || r.Salary));
+      if (looksLikeEmployee) {
+        setEmployees(rows.map(normalizeEmployeeRow));
+      } else {
+        setTransactions(rows.map(normalizeTransactionRow));
+      }
+    }
+    if (tx.length) setTransactions(tx);
+    if (em.length) setEmployees(em);
+    if (currencyGuess) setCurrency(currencyGuess);
+  };
+
+  const addTransaction = (t) => {
+    const newTx = normalizeTransactionRow(t);
+    setTransactions(prev => [newTx, ...prev]);
+  };
+
+  const monthsForChart = useMemo(() => {
+    // Ensure at least last 6 months are shown
+    const map = new Map(monthly.map(m => [m.month, m]));
+    const arr = [];
+    const now = new Date();
+    for (let i = 5; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = monthKey(d);
+      arr.push({ month: key, in: map.get(key)?.in || 0, out: map.get(key)?.out || 0 });
+    }
+    return arr;
+  }, [monthly]);
+
+  return (
+    <div className="min-h-screen w-full bg-white text-neutral-900">
+      <div className="relative h-[50vh] w-full">
+        <HeroCover />
+        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-white/40 to-white pointer-events-none" />
+        <div className="absolute inset-x-0 bottom-0 px-6 md:px-10 pb-6">
+          <h1 className="text-3xl md:text-5xl font-semibold tracking-tight">Personal Business Dashboard</h1>
+          <p className="text-sm md:text-base text-neutral-600 mt-2">Upload your CSV, see balance, employee dues, monthly performance, and add new transactions.</p>
+        </div>
+      </div>
+
+      <main className="max-w-7xl mx-auto px-6 md:px-10 -mt-16">
+        <div className="grid grid-cols-1 gap-6">
+          <DataUploader onUpload={handleUpload} />
+          <BalanceAndDues
+            balance={balance}
+            incomeTotal={incomeTotal}
+            expenseTotal={expenseTotal}
+            byCategory={byCategory}
+            employeeDues={employeeDues}
+            currency={currency}
+            months={monthsForChart}
+            formatCurrency={formatCurrency}
+          />
+          <TransactionsPanel
+            transactions={transactions}
+            onAddTransaction={addTransaction}
+            currency={currency}
+            formatCurrency={formatCurrency}
+          />
+        </div>
+      </main>
+    </div>
+  );
+}
